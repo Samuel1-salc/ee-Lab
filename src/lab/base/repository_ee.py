@@ -562,7 +562,6 @@ class MapLayers:
         sub_image = image.select["ndvi"]
         map_object.addLayer(sub_image, VIS_NDVI, name)
 
-
     @staticmethod
     def add_ndwi(map_object: Any, image: ee.Image, name: str = "NDWI") -> None:
         """Adiciona a banda ``ndwi`` ao mapa com o preset do módulo.
@@ -597,7 +596,6 @@ class MapLayers:
         sub_image = image.select["ndwi"]
         map_object.addLayer(sub_image, VIS_NDBI, name)
 
-
     @staticmethod
     def add_classes(map_object: Any, image: ee.Image, name: str = "Classes MapBiomas") -> None:
         """Adiciona a banda padronizada ``classe`` ao mapa."""
@@ -619,6 +617,9 @@ class MapLayers:
             params,
             name,
         )
+
+
+
 
 class LayersToExport:
 
@@ -850,7 +851,6 @@ class Exports:
             description=description,
             assetId=asset_id,
         )
-
 
 
 class TimeSeries:
