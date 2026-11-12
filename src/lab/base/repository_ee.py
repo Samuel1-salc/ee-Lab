@@ -14,10 +14,12 @@ para inspecções pequenas, nunca para baixar uma imagem inteira.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import ee
 
+import pandas as pd
 
 # Assets e parâmetros de visualização compartilhados pelo projeto.
 LANDSAT_8_L2 = "LANDSAT/LC08/C02/T1_L2"
@@ -102,10 +104,11 @@ def initialize_earth_engine(project: str | None = None, use_eerepr: bool = True)
             pass
 
 
+
+
 @dataclass(frozen=True)
 class PeriodoAgricola:
     """Janelas temporais da análise para um ano agrícola no Tocantins."""
-
     ano: int
     inicio_anual: str
     fim_anual: str
@@ -132,10 +135,10 @@ class PeriodoAgricola:
             fim_anual=f"{ano + 1}-01-01",
             inicio_seca=f"{ano}-05-01",
             fim_seca=f"{ano}-10-16",
+
             inicio_chuva=f"{ano - 1}-10-16",
             fim_chuva=f"{ano}-05-01",
         )
-
 
 class GeometryUtils:
     """Criação e métricas de regiões de interesse (AOI)."""
@@ -173,10 +176,10 @@ class GeometryUtils:
         return ee.Geometry.LineString([coordinates[0], coordinates[1]]).length(
             maxError=max_error
         ).getInfo() / 1_000
+    """Ponto único para carregar e filtrar ImageCollection/FeatureCollection."""
 
 
 class CollectionUtils:
-    """Ponto único para carregar e filtrar ImageCollection/FeatureCollection."""
 
     @staticmethod
     def image(source: str | ee.Image) -> ee.Image:
@@ -234,10 +237,10 @@ class CollectionUtils:
         for field, value in (property_filters or {}).items():
             collection = collection.filter(ee.Filter.eq(field, value))
         return collection
+    """Pré-processamento Landsat 8 C2 L2 e composições temporais."""
 
 
 class Landsat8:
-    """Pré-processamento Landsat 8 C2 L2 e composições temporais."""
 
     @staticmethod
     def prepare_surface_reflectance(image: ee.Image) -> ee.Image:
@@ -374,10 +377,10 @@ class Landsat8:
             collection.filterDate(period.inicio_anual, period.fim_anual) if period else collection
         )
         return selected.qualityMosaic("ndvi").clip(geometry)
+    """Produz a banda ``classe``: 1=pastagem e 2=agricultura (prioritária)."""
 
 
 class MapBiomasLabels:
-    """Produz a banda ``classe``: 1=pastagem e 2=agricultura (prioritária)."""
 
     @staticmethod
     def binary_mask(asset: str, year: int, geometry: ee.Geometry) -> ee.Image:
@@ -414,10 +417,10 @@ class MapBiomasLabels:
             .where(pasture.And(agriculture.Not()), 1)
             .where(agriculture, 2)
             .rename("classe")
+
             .selfMask()
             .toByte()
         )
-
 
 class LocalLabels:
     """Converte pontos ou polígonos locais em uma banda de rótulos raster.
@@ -480,10 +483,10 @@ class LocalLabels:
         return labels
 
     @staticmethod
+
     def attach_to_features(feature_space: ee.Image, labels: ee.Image) -> ee.Image:
         """Acrescenta a banda de rótulo ao feature space sem alterar as bandas existentes."""
         return feature_space.addBands(labels)
-
 
 
 
@@ -614,10 +617,10 @@ class MapLayers:
         params["bands"] = [band_name]
         map_object.addLayer(
             image.select(band_name),
+
             params,
             name,
         )
-
 
 
 
@@ -671,19 +674,19 @@ class LayersToExport:
             image: Imagem com as bandas ``red``, ``green`` e ``blue``.
             name: Nome exibido no controle de camadas.
         """
+
         sub_image = image.select(["red", "green", "blue"])
         map_object.addLayer(sub_image, VIS_RGB, name)
         return sub_image
 
 
 
-
 class Exports:
-    """Cria tarefas de exportação para o Google Drive; execute ``task.start()``."""
+    """Exporta métricas em CSV local e cria tarefas de exportação no Earth Engine."""
     LIMITAR_IMAGEM : dict[str, Any] =  {
-        "multiespectrais" : 2048,
-        "OneBand" : 4048,
-    }
+            "multiespectrais" : 2048,
+            "OneBand" : 4048,
+        }           
 
     @staticmethod
     def image_to_drive(
@@ -723,6 +726,72 @@ class Exports:
             fileFormat=file_format,
             fileDimensions=fileDimensions,
         )
+    
+    @staticmethod
+    def confusion_matrix_to_csv(
+        cm_val: Sequence[Sequence[float]],
+        classes: Sequence[Any],
+        filename: str = "matriz_confusao_validacao.csv",
+    ) -> None:
+        """Salva a matriz local de validação com rótulos reais e preditos.
+
+        Passe valores já obtidos com ``getInfo()`` e as classes na mesma
+        ordem da matriz. O arquivo inclui os rótulos das linhas.
+        """
+        import pandas as pd
+
+        if len(cm_val) != len(classes) or any(
+            len(row) != len(classes) for row in cm_val
+        ):
+            raise ValueError("A matriz deve ser quadrada e corresponder às classes.")
+        frame = pd.DataFrame(
+            cm_val,
+            index=[f"Real_{c}" for c in classes],
+            columns=[f"Predito_{c}" for c in classes],
+        )
+        frame.to_csv(filename, index=True)
+
+    @staticmethod
+    def class_metrics_to_csv(
+        classes: Sequence[Any],
+        prod_acc: Sequence[Any],
+        cons_acc: Sequence[Any],
+        filename: str = "metricas_por_classe_validacao.csv",
+    ) -> None:
+        """Salva acurácias locais por classe, aceitando vetores, linhas ou colunas.
+
+        Passe resultados de ``getInfo()`` na mesma ordem de ``classes``.
+        """
+        import pandas as pd
+
+        producers = pd.DataFrame(prod_acc).to_numpy().ravel().tolist()
+        consumers = pd.DataFrame(cons_acc).to_numpy().ravel().tolist()
+        if len(producers) != len(classes) or len(consumers) != len(classes):
+            raise ValueError("Cada métrica deve conter um valor por classe.")
+        frame = pd.DataFrame({
+            "Classe": classes,
+            "Acuracia_Produtor": producers,
+            "Acuracia_Consumidor": consumers,
+        })
+        frame.to_csv(filename, index=False)
+
+    @staticmethod
+    def global_metrics_to_csv(
+        acc_treino: float,
+        acc_val: float,
+        kappa_val: float,
+        filename: str = "resumo_metricas_rf.csv",
+    ) -> None:
+        """Salva acurácias de treino/validação e Kappa como uma linha de CSV."""
+        import pandas as pd
+
+        frame = pd.DataFrame([{
+            "Acuracia_Treinamento": acc_treino,
+            "Acuracia_Validacao": acc_val,
+            "Kappa_Validacao": kappa_val,
+        }])
+        frame.to_csv(filename, index=False)
+
 
     @classmethod
     def rgb_to_drive(cls, image: ee.Image, region: ee.Geometry, description: str = "landsat_rgb") -> ee.batch.Task:
@@ -834,7 +903,15 @@ class Exports:
     
     @classmethod
     def image_to_assets(
-         image: ee.Image, asset_id: str, description: str = "image_asset"
+        cls,
+        image: ee.Image,
+        asset_id: str,
+        description: str = "image_asset",
+        *,
+        region: ee.Geometry | None = None,
+        scale: int = 30,
+        max_pixels: int = 1e13,
+        pyramiding_policy: Mapping[str, str] | None = None,
     ) -> ee.batch.Task:
         """Cria uma tarefa para exportar uma imagem como asset do Earth Engine.
 
@@ -842,6 +919,11 @@ class Exports:
             image: Imagem que será persistida.
             asset_id: ID completo do asset de destino.
             description: Identificador da tarefa no Earth Engine.
+            region: Região a exportar; None usa a região padrão da imagem.
+            scale: Resolução em metros por pixel. Padrão: 30.
+            max_pixels: Limite de pixels permitido na exportação.
+            pyramiding_policy: Política por banda, como {".default": "mode"}
+                para classes categóricas. None mantém o padrão do GEE.
 
         Returns:
             Tarefa de exportação ainda não iniciada; chame ``start()``.
@@ -850,8 +932,11 @@ class Exports:
             image=image,
             description=description,
             assetId=asset_id,
+            region=region,
+            scale=scale,
+            maxPixels=max_pixels,
+            pyramidingPolicy=dict(pyramiding_policy) if pyramiding_policy else None,
         )
-
 
 class TimeSeries:
     """Extrai e desenha séries temporais por feição sem confundir Image e FeatureCollection."""
@@ -919,10 +1004,10 @@ class TimeSeries:
         plt.title("Série temporal do NDVI")
         plt.xlabel("Data")
         plt.ylabel("NDVI médio")
+
         plt.grid(True, linestyle="--", alpha=0.7)
         plt.legend()
         plt.show()
-
 
 
 class Models:
@@ -1212,3 +1297,321 @@ class Models:
     ) -> ee.Dictionary:
         """Conta as amostras por classe sem transferir o resultado ao cliente."""
         return ee.FeatureCollection(samples).aggregate_histogram(class_property)
+
+
+class Visualizer:
+    """Projeções 2D de amostras classificadas, com métricas de validação."""
+
+    @staticmethod
+    def plot_random_forest_classification(
+        validation_metrics: Mapping[str, Any],
+        feature_columns: Sequence[str] | ee.List,
+        *,
+        label_property: str = "class_id",
+        prediction_property: str = "classification",
+        class_names: Mapping[int, str] | None = None,
+        projection: str = "pca",
+        plot_bands: tuple[str, str] | None = None,
+        standardize: bool = False,
+        output_path: str | Path = "plots/random-forest-classification.png",
+        max_samples: int = 3000,
+        seed: int = 0,
+        figsize: tuple[float, float] = (10, 8),
+        dpi: int = 150,
+        show: bool = False,
+    ) -> dict[str, Any]:
+        """Salva um scatter de validação já classificada, sem treinar modelos.
+
+        Requer NumPy e Matplotlib; PCA requer também scikit-learn. Os imports
+        de visualização ocorrem somente na chamada. O chamador deve fornecer
+        validação independente e exclusivamente os preditores do treinamento.
+        As métricas vêm de Models.validation_metrics e descrevem a validação
+        completa, mesmo quando max_samples limita os pontos do gráfico.
+        A seleção depende do seed e de system:index estáveis no Earth Engine.
+
+        Args:
+            validation_metrics: Dicionário retornado por Models.validation_metrics,
+                por exemplo metricas_validacao. Usa "predictions" para os pontos
+                e as métricas GEE já definidas para a validação completa.
+            feature_columns: Nomes das bandas ou índices usados no treinamento,
+                como bandas_preditoras. Não incluir rótulos, predições ou
+                probabilidades. Aceita sequência Python ou ee.List.
+            label_property: Campo da classe verdadeira. Padrão: "class_id";
+                informar "landcover" para o notebook classification-v3.
+            prediction_property: Campo da classe prevista pelo classificador.
+                Padrão: "classification". Deve diferir de label_property.
+            class_names: Mapeamento opcional de códigos inteiros para nomes
+                na legenda, por exemplo {0: "Floresta", 1: "Agricultura"}.
+                Códigos sem nome são exibidos como números.
+            projection: "pca" reduz os preditores a duas componentes para
+                visualização; "bands" usa diretamente duas bandas nomeadas.
+                Padrão: "pca". Não altera o modelo nem suas previsões.
+            plot_bands: Dois nomes distintos presentes em feature_columns,
+                por exemplo ("nir", "red"). Obrigatório no modo "bands";
+                deve ser None no modo "pca".
+            standardize: Se True, centraliza e divide os preditores pelo
+                desvio padrão antes do PCA, reduzindo diferenças de escala.
+                Padrão: False. Não é permitido no modo "bands".
+            output_path: Caminho do PNG a salvar, relativo ao diretório atual
+                ou absoluto. Cria diretórios pais e substitui arquivo existente.
+                Padrão: "plots/random-forest-classification.png".
+            max_samples: Máximo de amostras transferidas e plotadas, limitado
+                no servidor. Inteiro de 1 a 10000; padrão: 3000. Não altera
+                o conjunto avaliado pelas métricas recebidas do GEE.
+            seed: Inteiro que controla a seleção pseudoaleatória das amostras
+                para o gráfico. Padrão: 0. Não é o seed de treino do Random Forest.
+            figsize: Largura e altura da figura em polegadas, ambas positivas.
+                Padrão: (10, 8).
+            dpi: Resolução positiva da figura e do PNG em pontos por polegada.
+                Padrão: 150.
+            show: Se True, também exibe a figura após salvar. Padrão: False.
+                A figura é fechada ao final em ambos os casos.
+
+        Returns:
+            Dicionário com output_path (Path), metrics (matriz de confusão,
+            ordem das classes, acurácia, kappa e acurácias do produtor e
+            consumidor da validação completa), sample_counts (disponíveis e plotadas),
+            projection, feature_columns, plot_bands, explained_variance_ratio
+            (duas proporções no PCA; None em bands), standardized, seed e warnings.
+
+        Raises:
+            ValueError: Configuração inválida, coleção vazia, campos ausentes,
+                valores não numéricos/nulos/não finitos, classes não inteiras
+                ou dados insuficientes para PCA.
+        """
+        import math
+
+        if projection not in ("pca", "bands"):
+            raise ValueError("projection deve ser 'pca' ou 'bands'.")
+        required = {
+            "predictions", "confusion_matrix", "accuracy", "kappa",
+            "producers_accuracy", "consumers_accuracy",
+        }
+        if not isinstance(validation_metrics, Mapping) or not required.issubset(validation_metrics):
+            raise ValueError("Informe o dicionário completo de Models.validation_metrics().")
+        if isinstance(max_samples, bool) or not isinstance(max_samples, int):
+            raise ValueError("max_samples deve ser inteiro entre 1 e 10000.")
+        if not 1 <= max_samples <= 10000:
+            raise ValueError("max_samples deve estar entre 1 e 10000.")
+        if isinstance(seed, bool) or not isinstance(seed, int):
+            raise ValueError("seed deve ser inteiro.")
+        if not isinstance(standardize, bool) or not isinstance(show, bool):
+            raise ValueError("standardize e show devem ser booleanos.")
+        if len(figsize) != 2 or any(
+            not math.isfinite(value) or value <= 0 for value in figsize
+        ):
+            raise ValueError("figsize deve conter duas dimensões positivas e finitas.")
+        if not math.isfinite(dpi) or dpi <= 0:
+            raise ValueError("dpi deve ser positivo e finito.")
+        path = Path(output_path)
+        if path.suffix.lower() != ".png":
+            raise ValueError("output_path deve apontar para um arquivo .png.")
+        if isinstance(feature_columns, (str, bytes)):
+            raise ValueError("feature_columns deve ser uma lista de nomes.")
+        columns = (
+            feature_columns.getInfo()
+            if isinstance(feature_columns, ee.List)
+            else list(feature_columns)
+        )
+        if not columns or any(not isinstance(c, str) or not c for c in columns):
+            raise ValueError("Informe nomes de preditores não vazios.")
+        if len(set(columns)) != len(columns):
+            raise ValueError("feature_columns contém nomes duplicados.")
+        if any(not isinstance(p, str) or not p for p in (label_property, prediction_property)):
+            raise ValueError("As propriedades de rótulo e predição devem ter nomes válidos.")
+        if label_property == prediction_property:
+            raise ValueError("Rótulo e predição devem usar propriedades diferentes.")
+        if label_property in columns or prediction_property in columns:
+            raise ValueError("Rótulo e predição não podem ser preditores da projeção.")
+        if projection == "bands":
+            if (
+                not isinstance(plot_bands, (tuple, list))
+                or len(plot_bands) != 2
+                or plot_bands[0] == plot_bands[1]
+                or any(b not in columns for b in plot_bands)
+            ):
+                raise ValueError("plot_bands deve conter dois preditores distintos existentes.")
+            if standardize:
+                raise ValueError("standardize só é permitido no modo pca.")
+        elif plot_bands is not None or len(columns) < 2:
+            raise ValueError("PCA exige ao menos dois preditores e plot_bands=None.")
+
+        frame, available = Visualizer._extract_validation_samples(
+            validation_metrics["predictions"], columns + [label_property, prediction_property],
+            max_samples, seed,
+        )
+        Visualizer._validate_classification_frame(
+            frame, columns, label_property, prediction_property,
+        )
+        warnings: list[str] = []
+        if available > len(frame):
+            warnings.append(
+                f"Exibindo {len(frame)} de {available} amostras; métricas da validação completa."
+            )
+        metrics = Visualizer._materialize_validation_metrics(validation_metrics)
+        names = dict(class_names or {})
+        absent = set(names) - set(frame[label_property])
+        if absent:
+            warnings.append(f"Classes nomeadas sem amostras verdadeiras no gráfico: {sorted(absent)}.")
+        coordinates, axis_labels, variance = Visualizer._project_classification(
+            frame, columns, projection, plot_bands, standardize,
+        )
+        Visualizer._render_classification(
+            coordinates, axis_labels, frame[label_property].to_numpy(),
+            frame[prediction_property].to_numpy(), names, metrics,
+            available, seed, path, figsize, dpi, show,
+        )
+        return {
+            "output_path": path,
+            "metrics": metrics,
+            "sample_counts": {"available": available, "plotted": len(frame)},
+            "projection": projection,
+            "feature_columns": columns,
+            "plot_bands": tuple(plot_bands) if plot_bands is not None else None,
+            "explained_variance_ratio": variance,
+            "standardized": standardize,
+            "seed": seed,
+            "warnings": warnings,
+        }
+
+    @staticmethod
+    def _extract_validation_samples(
+        samples: ee.FeatureCollection, columns: list[str], max_samples: int, seed: int,
+    ) -> tuple[pd.DataFrame, int]:
+        """Limita no servidor e materializa atributos alinhados, sem geometria."""
+        collection = ee.FeatureCollection(samples)
+        available = int(collection.size().getInfo())
+        if available == 0:
+            raise ValueError("A coleção de validação está vazia.")
+        random_column = "_visualizer_random"
+        while random_column in columns:
+            random_column += "_"
+        selected = (
+            collection.randomColumn(random_column, seed)
+            .sort(random_column)
+            .limit(max_samples)
+        )
+        # toDictionary usa nomes exatos; não interpreta nomes de bandas como regex.
+        selected = selected.map(
+            lambda feature: ee.Feature(None, feature.toDictionary(columns))
+        )
+        payload = selected.getInfo()
+        rows = [feature.get("properties", {}) for feature in payload["features"]]
+        return pd.DataFrame(rows), available
+
+    @staticmethod
+    def _validate_classification_frame(
+        frame: pd.DataFrame, columns: list[str], label: str, prediction: str,
+    ) -> None:
+        """Valida sem remover amostras ou converter silenciosamente strings."""
+        import numpy as np
+        from pandas.api.types import is_bool_dtype, is_numeric_dtype
+
+        if frame.empty:
+            raise ValueError("Nenhuma amostra foi extraída para visualização.")
+        for column in columns + [label, prediction]:
+            if column not in frame:
+                raise ValueError(f"Coluna ausente nas amostras: {column}.")
+            series = frame[column]
+            if (
+                not is_numeric_dtype(series)
+                or is_bool_dtype(series)
+                or np.iscomplexobj(series.to_numpy())
+                or series.isna().any()
+                or not np.isfinite(series.to_numpy()).all()
+            ):
+                raise ValueError(f"A coluna {column} deve conter números reais finitos, sem nulos.")
+            if column in (label, prediction):
+                if not (series == np.floor(series)).all():
+                    raise ValueError(f"A coluna {column} deve conter códigos de classe inteiros.")
+
+    @staticmethod
+    def _materialize_validation_metrics(metrics: Mapping[str, Any]) -> dict[str, Any]:
+        """Materializa os agregados GEE recebidos, sem recalcular métricas."""
+        matrix = metrics["confusion_matrix"]
+        result = ee.Dictionary({
+            "confusion_matrix": matrix.array(),
+            "class_order": matrix.order(),
+            "accuracy": metrics["accuracy"],
+            "kappa": metrics["kappa"],
+            "producers_accuracy": metrics["producers_accuracy"],
+            "consumers_accuracy": metrics["consumers_accuracy"],
+        }).getInfo()
+        result["scope"] = "full_validation"
+        return result
+
+    @staticmethod
+    def _project_classification(
+        frame: pd.DataFrame, columns: list[str], projection: str,
+        plot_bands: tuple[str, str] | None, standardize: bool,
+    ) -> tuple[Any, tuple[str, str], list[float] | None]:
+        """Projeta apenas preditores; PCA é descritivo e não altera o modelo."""
+        import numpy as np
+
+        if projection == "bands":
+            return frame[list(plot_bands)].to_numpy(), tuple(plot_bands), None
+        from sklearn.decomposition import PCA
+
+        if len(frame) < 2:
+            raise ValueError("PCA exige pelo menos duas amostras.")
+        values = frame[columns].to_numpy(dtype=float)
+        if standardize:
+            std = values.std(axis=0)
+            values = (values - values.mean(axis=0)) / np.where(std == 0, 1, std)
+        if not np.isfinite(values).all() or not np.isfinite(values.var(axis=0)).all():
+            raise ValueError("A escala dos preditores excede os limites numéricos do PCA.")
+        if values.var(axis=0).sum() == 0:
+            raise ValueError("PCA exige variância total não nula nos preditores.")
+        pca = PCA(n_components=2, svd_solver="full")
+        coordinates = pca.fit_transform(values)
+        variance = pca.explained_variance_ratio_.tolist()
+        labels = tuple(f"PC{i + 1} ({ratio:.1%} da variância)" for i, ratio in enumerate(variance))
+        return coordinates, labels, variance
+
+    @staticmethod
+    def _render_classification(
+        coordinates: Any, axis_labels: tuple[str, str], actual: Any, predicted: Any,
+        names: Mapping[int, str], metrics: Mapping[str, Any], available: int,
+        seed: int, path: Path, figsize: tuple[float, float], dpi: int, show: bool,
+    ) -> None:
+        """Salva o PNG e garante liberação da figura, inclusive em falhas."""
+        import numpy as np
+        import matplotlib.pyplot as plt
+
+        classes = np.unique(actual)
+        colors = plt.get_cmap("turbo")(np.linspace(0.05, 0.95, len(classes)))
+        fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+        try:
+            for code, color in zip(classes, colors):
+                belongs = actual == code
+                for correct, marker, caption in ((True, "o", "Acerto"), (False, "x", "Erro")):
+                    mask = belongs & ((actual == predicted) == correct)
+                    if mask.any():
+                        ax.scatter(
+                            coordinates[mask, 0], coordinates[mask, 1],
+                            color=color, marker=marker, alpha=0.75,
+                            label=f"{names.get(int(code), str(int(code)))} — {caption}",
+                        )
+            ax.set_xlabel(axis_labels[0])
+            ax.set_ylabel(axis_labels[1])
+            ax.set_title(
+                "Random Forest — projeção 2D da validação\n"
+                f"{len(actual)}/{available} amostras | {len(classes)} classes reais | seed={seed}"
+            )
+            ax.grid(True, linestyle="--", alpha=0.3)
+            ax.legend(loc="best")
+            ax.text(
+                0.98, 0.02,
+                "Métricas GEE — validação completa\n"
+                f"Acurácia: {metrics['accuracy']:.2%}\nKappa: {metrics['kappa']:.3f}\n"
+                "Projeção: não representa fronteira de decisão",
+                transform=ax.transAxes, ha="right", va="bottom", fontsize=9,
+                bbox={"boxstyle": "round,pad=0.5", "facecolor": "white", "alpha": 0.85},
+            )
+            fig.tight_layout()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fig.savefig(path, dpi=dpi, bbox_inches="tight")
+            if show:
+                plt.show()
+        finally:
+            plt.close(fig)
