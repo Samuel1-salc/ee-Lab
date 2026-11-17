@@ -22,6 +22,7 @@ import ee
 import pandas as pd
 
 # Assets e parâmetros de visualização compartilhados pelo projeto.
+MODIS_13_Q1 = "MODIS/061/MOD13Q1"
 LANDSAT_8_L2 = "LANDSAT/LC08/C02/T1_L2"
 PROJECT = "lateral-spirit-514212-j0"
 MAPBIOMAS_AGRICULTURE_CYCLES = (
@@ -238,6 +239,160 @@ class CollectionUtils:
             collection = collection.filter(ee.Filter.eq(field, value))
         return collection
     """Pré-processamento Landsat 8 C2 L2 e composições temporais."""
+
+class Modis:
+    VIS_NDVI: dict[str,Any] = {
+        'min': 0,
+        'max' : 8000,
+        'palette': [
+            'ffffff', 'ce7e45', 'df923d', 'f1b555', 'fcd163', '99b718', '74a901',
+            '66a000', '529400', '3e8601', '207401', '056201', '004c00', '023b01',
+            '012e01', '011d01', '011301'
+        ],
+    }
+    @staticmethod
+    def add_indices (image: ee.Image) -> ee.Image:
+        """padroniza bandas MODIS"""
+        return image.select('NDVI').rename('ndvi')
+
+    @classmethod
+    def collection (cls, geometry: ee.Geometry, period: PeriodoAgricola)-> ee.ImageCollection:
+        """busca a image collection no ee RPC API"""
+        raw = CollectionUtils.extract_images(
+            MODIS_13_Q1, geometry, period.inicio_anual, period.fim_anual
+        )
+        return raw.map(cls.add_indices) 
+
+
+
+
+
+
+class TrainingPatches:
+    """Download direto de assets e serialização local, sem Cloud Storage.
+
+    ``getPixels`` lê as bandas originais do asset: para MOD13Q1, use
+    ``NDVI``, mesmo quando a coleção de análise foi renomeada para ``ndvi``.
+    NumPy e TensorFlow são importados apenas nos métodos que os utilizam.
+    """
+
+    @staticmethod
+    def grid(
+        coordinates: Sequence[float],
+        size: int = 8,
+        scale: float = 250,
+        crs: str = "EPSG:32722",
+    ) -> dict[str, Any]:
+        """Cria grade quadrada centrada no ponto; use um CRS em metros."""
+        if size < 1 or int(size) != size or scale <= 0:
+            raise ValueError("size deve ser inteiro positivo e scale > 0.")
+        x, y = (
+            ee.Geometry.Point(list(coordinates))
+            .transform(crs, 1).coordinates().getInfo()
+        )
+        half_side = size * scale / 2
+        return {
+            "dimensions": {"width": size, "height": size},
+            "affineTransform": {
+                "scaleX": scale, "shearX": 0, "translateX": x - half_side,
+                "shearY": 0, "scaleY": -scale, "translateY": y + half_side,
+            },
+            "crsCode": crs,
+        }
+
+    @staticmethod
+    def download(
+        asset_ids: Sequence[str],
+        grid: Mapping[str, Any],
+        band: str = "NDVI",
+        max_workers: int = 4,
+    ) -> Any:
+        """Retorna array (tempo, altura, largura) na ordem dos IDs recebidos.
+
+        A API EE já aplica retries a erros transitórios. Erros persistentes
+        interrompem o lote, em vez de gerar séries silenciosamente incompletas.
+        Limite a lista de IDs a um ano por chamada e use patches pequenos.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+
+        import numpy as np
+
+        if not asset_ids:
+            raise ValueError("Nenhum asset encontrado para o período.")
+        if not 1 <= max_workers <= 16:
+            raise ValueError("Use entre 1 e 16 workers.")
+
+        def fetch(asset_id: str) -> Any:
+            try:
+                pixels = ee.data.getPixels({
+                    "assetId": asset_id,
+                    "bandIds": [band],
+                    "fileFormat": "NUMPY_NDARRAY",
+                    "grid": dict(grid),
+                })
+                return pixels[band]
+            except Exception as error:
+                raise RuntimeError(f"Falha no download de {asset_id}") from error
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            return np.stack(list(executor.map(fetch, asset_ids)))
+
+    @staticmethod
+    def to_example(
+        patches: Any,
+        asset_ids: Sequence[str],
+        coordinates: Sequence[float],
+        year: int,
+        grid: Mapping[str, Any],
+    ) -> Any:
+        """Serializa um ponto/ano, incluindo IDs ordenados e grade espacial.
+
+        Adaptação do tutorial Google Earth Engine training patches (2023),
+        Apache-2.0: https://github.com/google/earthengine-community/blob/master/
+        guides/linked/Earth_Engine_training_patches_getPixels.ipynb
+        """
+        import json
+
+        import numpy as np
+        import tensorflow as tf
+
+        patches = np.asarray(patches, dtype=np.float32)
+        if patches.ndim != 3 or patches.shape[0] != len(asset_ids):
+            raise ValueError("Esperado array (tempo, altura, largura), um ID por quadro.")
+        if patches.shape[1:] != (grid["dimensions"]["height"], grid["dimensions"]["width"]):
+            raise ValueError("O tamanho dos patches difere da grade.")
+        features = {
+            "shape": tf.train.Feature(int64_list=tf.train.Int64List(value=patches.shape)),
+            "year": tf.train.Feature(int64_list=tf.train.Int64List(value=[year])),
+            "coordinates": tf.train.Feature(float_list=tf.train.FloatList(value=coordinates)),
+            "patches": tf.train.Feature(float_list=tf.train.FloatList(value=patches.ravel())),
+            "asset_ids": tf.train.Feature(bytes_list=tf.train.BytesList(
+                value=[asset_id.encode("utf-8") for asset_id in asset_ids]
+            )),
+            "grid": tf.train.Feature(bytes_list=tf.train.BytesList(
+                value=[json.dumps(dict(grid)).encode("utf-8")]
+            )),
+        }
+        return tf.train.Example(features=tf.train.Features(feature=features))
+
+    @staticmethod
+    def parse_example(serialized: bytes) -> dict[str, Any]:
+        """Lê um registro local em modo eager, preservando a ordem temporal."""
+        import json
+
+        import numpy as np
+        import tensorflow as tf
+
+        example = tf.train.Example.FromString(serialized)
+        features = example.features.feature
+        shape = tuple(features["shape"].int64_list.value)
+        return {
+            "patches": np.asarray(features["patches"].float_list.value, dtype=np.float32).reshape(shape),
+            "asset_ids": [value.decode("utf-8") for value in features["asset_ids"].bytes_list.value],
+            "coordinates": list(features["coordinates"].float_list.value),
+            "year": features["year"].int64_list.value[0],
+            "grid": json.loads(features["grid"].bytes_list.value[0]),
+        }
 
 
 class Landsat8:

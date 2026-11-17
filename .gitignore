@@ -4,3 +4,6 @@ assets/*
 
 src/assets/*
 src/.assets/*
+
+# Downloads locais do notebook de animação.
+src/lab/base/outputs/animation/

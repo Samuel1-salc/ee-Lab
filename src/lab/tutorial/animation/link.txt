@@ -1,0 +1,1 @@
+https://github.com/google/earthengine-community/blob/master/guides/linked/Earth_Engine_training_patches_getPixels.ipynb
