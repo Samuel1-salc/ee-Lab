@@ -1036,9 +1036,34 @@ class Exports:
         """
         return cls.image_to_drive(image, description, region)
 
-    @classmethod
-    def feature_Collection_to_Assets_ee(
-        cls, collection: ee.FeatureCollection, asset_id: str, description: str = "features"
+    @staticmethod
+    def table_to_drive(
+        collection: ee.FeatureCollection,
+        description: str = "features",
+        *,
+        folder: str | None = None,
+        file_name_prefix: str | None = None,
+        selectors: Sequence[str] | None = None,
+    ) -> ee.batch.Task:
+        """Prepara a exportação de uma coleção de feições como CSV no Google Drive.
+
+        Use ``selectors`` para selecionar e ordenar as colunas. Chame
+        ``start()`` na tarefa retornada para iniciar a exportação.
+        """
+        return ee.batch.Export.table.toDrive(
+            collection=collection,
+            description=description,
+            folder=folder,
+            fileNamePrefix=file_name_prefix,
+            fileFormat="CSV",
+            selectors=list(selectors) if selectors is not None else None,
+        )
+
+    @staticmethod
+    def table_to_assets(
+        collection: ee.FeatureCollection,
+        asset_id: str,
+        description: str = "features",
     ) -> ee.batch.Task:
         """Cria uma tarefa para exportar feições como asset do Earth Engine.
 
@@ -1055,6 +1080,13 @@ class Exports:
             description=description,
             assetId=asset_id,
         )
+
+    @classmethod
+    def feature_Collection_to_Assets_ee(
+        cls, collection: ee.FeatureCollection, asset_id: str, description: str = "features"
+    ) -> ee.batch.Task:
+        """Prepara a exportação de feições para um asset do Earth Engine."""
+        return cls.table_to_assets(collection, asset_id, description)
     
     @classmethod
     def image_to_assets(
