@@ -24,6 +24,7 @@ import pandas as pd
 # Assets e parâmetros de visualização compartilhados pelo projeto.
 MODIS_13_Q1 = "MODIS/061/MOD13Q1"
 LANDSAT_8_L2 = "LANDSAT/LC08/C02/T1_L2"
+LANDSAT_8_TOA = "LANDSAT/LC08/C02/T1_TOA"
 PROJECT = "lateral-spirit-514212-j0"
 MAPBIOMAS_AGRICULTURE_CYCLES = (
     "projects/mapbiomas-public/assets/brazil/lulc/collection11/"
@@ -105,6 +106,23 @@ def initialize_earth_engine(project: str | None = None, use_eerepr: bool = True)
             pass
 
 
+@dataclass(frozen=True)
+class Periodo:
+    """Janelas temporais gerais"""
+    start_date : str
+    end_date:str
+
+    @classmethod
+    def geral(cls, inicio: int, fim: int) -> "Periodo":
+        """Cria as janelas de tempo entre start date e end date em anos
+            Args:
+                start_date : Ano de inicício da coleção
+                end_date : Ano final da coleção
+        """
+        return cls (
+            start_date=f"{inicio}-01-01",
+            end_date=f"{fim}-01-01"
+        )
 
 
 @dataclass(frozen=True)
@@ -413,6 +431,13 @@ class Landsat8:
         return image.addBands(scaled, None, True).updateMask(qa_mask).updateMask(saturation_mask)
 
     @staticmethod
+    def prepare_toa_reflectance(image: ee.Image) -> ee.Image:
+        """Mascara pixels ruins e saturados em cenas TOA já calibradas."""
+        qa_mask = image.select("QA_PIXEL").bitwiseAnd(0b11111).eq(0)
+        saturation_mask = image.select("QA_RADSAT").eq(0)
+        return image.updateMask(qa_mask).updateMask(saturation_mask)
+
+    @staticmethod
     def add_indices(image: ee.Image) -> ee.Image:
         """Padroniza bandas Landsat e acrescenta índices espectrais."""
         # Azul (0,45–0,51 µm): água rasa, aerossóis e composição em cor natural.
@@ -502,6 +527,14 @@ class Landsat8:
             LANDSAT_8_L2, geometry, period.inicio_chuva, period.fim_anual
         )
         return raw.map(cls.prepare_surface_reflectance).map(cls.add_indices)
+    
+    @classmethod
+    def getSimpleCollection(cls, geometry: ee.Geometry, period: Periodo) -> ee.ImageCollection:
+        """Retorna a coleção TOA mascarada, com os nomes originais das bandas."""
+        raw = CollectionUtils.extract_images(
+            LANDSAT_8_TOA, geometry, start_date=period.start_date, end_date=period.end_date
+        )
+        return raw.map(cls.prepare_toa_reflectance)
 
     @staticmethod
     def feature_space(
