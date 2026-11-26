@@ -85,6 +85,8 @@ VIS_LABELS: dict[str, Any] = {
 }
 
 
+
+
 def AuthenticateEarhEngine(force: bool = False) -> None:
     if force or not ee.data._credentials:
         ee.Authenticate()
@@ -104,6 +106,33 @@ def initialize_earth_engine(project: str | None = None, use_eerepr: bool = True)
         except ImportError:
             # eerepr apenas melhora a visualização no notebook; não é requisito.
             pass
+
+
+
+class areaEstudo:
+    REGIOES = {
+        "Araguaina": [
+            [-48.47603072847974, -7.46189335249731],
+            [-47.93276927152026, -7.46189335249731],
+            [-47.93276927152026, -6.92290664750270],
+            [-48.47603072847974, -6.92290664750270],
+            [-48.47603072847974, -7.46189335249731],
+        ],
+        "Araguacu": [
+            [-50.10290623424413, -13.20119335249730],
+            [-49.54989376575587, -13.20119335249730],
+            [-49.54989376575587, -12.66220664750269],
+            [-50.10290623424413, -12.66220664750269],
+            [-50.10290623424413, -13.20119335249730],
+        ],
+    }
+
+    @classmethod
+    def area(cls, municipio: str):
+        if municipio not in cls.REGIOES:
+            raise ValueError(f"Município '{municipio}' não cadastrado.")
+        return cls.REGIOES[municipio]
+        
 
 
 @dataclass(frozen=True)
