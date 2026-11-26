@@ -24,6 +24,7 @@ import pandas as pd
 # Assets e parâmetros de visualização compartilhados pelo projeto.
 MODIS_13_Q1 = "MODIS/061/MOD13Q1"
 LANDSAT_8_L2 = "LANDSAT/LC08/C02/T1_L2"
+LANDSAT_8_TOA = "LANDSAT/LC08/C02/T1_TOA"
 PROJECT = "lateral-spirit-514212-j0"
 MAPBIOMAS_AGRICULTURE_CYCLES = (
     "projects/mapbiomas-public/assets/brazil/lulc/collection11/"
@@ -84,6 +85,8 @@ VIS_LABELS: dict[str, Any] = {
 }
 
 
+
+
 def AuthenticateEarhEngine(force: bool = False) -> None:
     if force or not ee.data._credentials:
         ee.Authenticate()
@@ -105,6 +108,50 @@ def initialize_earth_engine(project: str | None = None, use_eerepr: bool = True)
             pass
 
 
+
+class areaEstudo:
+    REGIOES = {
+        "Araguaina": [
+            [-48.47603072847974, -7.46189335249731],
+            [-47.93276927152026, -7.46189335249731],
+            [-47.93276927152026, -6.92290664750270],
+            [-48.47603072847974, -6.92290664750270],
+            [-48.47603072847974, -7.46189335249731],
+        ],
+        "Araguacu": [
+            [-50.10290623424413, -13.20119335249730],
+            [-49.54989376575587, -13.20119335249730],
+            [-49.54989376575587, -12.66220664750269],
+            [-50.10290623424413, -12.66220664750269],
+            [-50.10290623424413, -13.20119335249730],
+        ],
+    }
+
+    @classmethod
+    def area(cls, municipio: str):
+        if municipio not in cls.REGIOES:
+            raise ValueError(f"Município '{municipio}' não cadastrado.")
+        return cls.REGIOES[municipio]
+        
+
+
+@dataclass(frozen=True)
+class Periodo:
+    """Janelas temporais gerais"""
+    start_date : str
+    end_date:str
+
+    @classmethod
+    def geral(cls, inicio: int, fim: int) -> "Periodo":
+        """Cria as janelas de tempo entre start date e end date em anos
+            Args:
+                start_date : Ano de inicício da coleção
+                end_date : Ano final da coleção
+        """
+        return cls (
+            start_date=f"{inicio}-01-01",
+            end_date=f"{fim}-01-01"
+        )
 
 
 @dataclass(frozen=True)
@@ -413,6 +460,13 @@ class Landsat8:
         return image.addBands(scaled, None, True).updateMask(qa_mask).updateMask(saturation_mask)
 
     @staticmethod
+    def prepare_toa_reflectance(image: ee.Image) -> ee.Image:
+        """Mascara pixels ruins e saturados em cenas TOA já calibradas."""
+        qa_mask = image.select("QA_PIXEL").bitwiseAnd(0b11111).eq(0)
+        saturation_mask = image.select("QA_RADSAT").eq(0)
+        return image.updateMask(qa_mask).updateMask(saturation_mask)
+
+    @staticmethod
     def add_indices(image: ee.Image) -> ee.Image:
         """Padroniza bandas Landsat e acrescenta índices espectrais."""
         # Azul (0,45–0,51 µm): água rasa, aerossóis e composição em cor natural.
@@ -502,6 +556,14 @@ class Landsat8:
             LANDSAT_8_L2, geometry, period.inicio_chuva, period.fim_anual
         )
         return raw.map(cls.prepare_surface_reflectance).map(cls.add_indices)
+    
+    @classmethod
+    def getSimpleCollection(cls, geometry: ee.Geometry, period: Periodo) -> ee.ImageCollection:
+        """Retorna a coleção TOA mascarada, com os nomes originais das bandas."""
+        raw = CollectionUtils.extract_images(
+            LANDSAT_8_TOA, geometry, start_date=period.start_date, end_date=period.end_date
+        )
+        return raw.map(cls.prepare_toa_reflectance)
 
     @staticmethod
     def feature_space(
@@ -847,7 +909,7 @@ class Exports:
     def image_to_drive(
         image: ee.Image,
         description: str,
-        region: ee.Geometry,
+        region: ee.Geometry | None = None,
         folder: str = "earth_engine",
         scale: int = 30,
         crs: str = "EPSG:4326",
@@ -1036,9 +1098,34 @@ class Exports:
         """
         return cls.image_to_drive(image, description, region)
 
-    @classmethod
-    def feature_Collection_to_Assets_ee(
-        cls, collection: ee.FeatureCollection, asset_id: str, description: str = "features"
+    @staticmethod
+    def table_to_drive(
+        collection: ee.FeatureCollection,
+        description: str = "features",
+        *,
+        folder: str | None = None,
+        file_name_prefix: str | None = None,
+        selectors: Sequence[str] | None = None,
+    ) -> ee.batch.Task:
+        """Prepara a exportação de uma coleção de feições como CSV no Google Drive.
+
+        Use ``selectors`` para selecionar e ordenar as colunas. Chame
+        ``start()`` na tarefa retornada para iniciar a exportação.
+        """
+        return ee.batch.Export.table.toDrive(
+            collection=collection,
+            description=description,
+            folder=folder,
+            fileNamePrefix=file_name_prefix,
+            fileFormat="CSV",
+            selectors=list(selectors) if selectors is not None else None,
+        )
+
+    @staticmethod
+    def table_to_assets(
+        collection: ee.FeatureCollection,
+        asset_id: str,
+        description: str = "features",
     ) -> ee.batch.Task:
         """Cria uma tarefa para exportar feições como asset do Earth Engine.
 
@@ -1055,6 +1142,13 @@ class Exports:
             description=description,
             assetId=asset_id,
         )
+
+    @classmethod
+    def feature_Collection_to_Assets_ee(
+        cls, collection: ee.FeatureCollection, asset_id: str, description: str = "features"
+    ) -> ee.batch.Task:
+        """Prepara a exportação de feições para um asset do Earth Engine."""
+        return cls.table_to_assets(collection, asset_id, description)
     
     @classmethod
     def image_to_assets(
