@@ -880,7 +880,7 @@ class Exports:
     def image_to_drive(
         image: ee.Image,
         description: str,
-        region: ee.Geometry,
+        region: ee.Geometry | None = None,
         folder: str = "earth_engine",
         scale: int = 30,
         crs: str = "EPSG:4326",
